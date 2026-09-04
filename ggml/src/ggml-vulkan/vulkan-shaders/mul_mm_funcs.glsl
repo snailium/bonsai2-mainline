@@ -60,15 +60,293 @@ void load_a_to_shmem(const uint pos_a, const uint row, const uint col, const uin
         return;
     }
 #endif
-    const uint idx = pos_a + col * p.stride_a + row * 2;
-    if (idx_m < p.M && block + row * 2 + 1 < end_k) {
-        store_a(col, row, FLOAT_TYPEV2(TO_FLOAT_TYPE(data_a_scalar[idx]),
-                                       TO_FLOAT_TYPE(data_a_scalar[idx + 1])));
-    } else if (idx_m < p.M && block + row * 2 < end_k) {
-        store_a(col, row, FLOAT_TYPEV2(TO_FLOAT_TYPE(data_a_scalar[idx]), 0.0f));
-    } else {
-        store_a(col, row, FLOAT_TYPEV2(0.0f));
-    }
+            const uint idx = pos_a + col * p.stride_a + row * 2;
+            if (idx_m < p.M && block + row * 2 + 1 < end_k) {
+                store_a(col, row, FLOAT_TYPEV2(TO_FLOAT_TYPE(data_a_scalar[idx]),
+                                               TO_FLOAT_TYPE(data_a_scalar[idx + 1])));
+            } else if (idx_m < p.M && block + row * 2 < end_k) {
+                store_a(col, row, FLOAT_TYPEV2(TO_FLOAT_TYPE(data_a_scalar[idx]), 0.0f));
+            } else {
+                store_a(col, row, FLOAT_TYPEV2(0.0f));
+            }
+#elif defined(DATA_A_Q4_0)
+            const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
+
+            const uint ib = idx / 4;
+            const uint iqs = idx & 0x03;
+
+            const float d = float(data_a_packed16[ib].d);
+            const uint vui = uint(data_a_packed16[ib].qs[2*iqs]) | (uint(data_a_packed16[ib].qs[2*iqs + 1]) << 16);
+            const vec4 v0 = (vec4(unpack8(vui & 0x0F0F0F0F)) - 8.0f) * d;
+            const vec4 v1 = (vec4(unpack8((vui >> 4) & 0x0F0F0F0F)) - 8.0f) * d;
+
+            const uint k_pair = row * LOAD_VEC_A / 4;
+            store_a(col, k_pair,     FLOAT_TYPEV2(v0.xy));
+            store_a(col, k_pair + 1, FLOAT_TYPEV2(v0.zw));
+            store_a(col, k_pair + 8, FLOAT_TYPEV2(v1.xy));
+            store_a(col, k_pair + 9, FLOAT_TYPEV2(v1.zw));
+#elif defined(DATA_A_Q4_1)
+            const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
+
+            const uint ib = idx / 4;
+            const uint iqs = idx & 0x03;
+
+            const vec2 dm = vec2(data_a_packed32[ib].dm);
+            const uint vui = data_a_packed32[ib].qs[iqs];
+            const vec4 v0 = vec4(unpack8(vui & 0x0F0F0F0F)) * dm.x + dm.y;
+            const vec4 v1 = vec4(unpack8((vui >> 4) & 0x0F0F0F0F)) * dm.x + dm.y;
+
+            const uint k_pair = row * LOAD_VEC_A / 4;
+            store_a(col, k_pair,     FLOAT_TYPEV2(v0.xy));
+            store_a(col, k_pair + 1, FLOAT_TYPEV2(v0.zw));
+            store_a(col, k_pair + 8, FLOAT_TYPEV2(v1.xy));
+            store_a(col, k_pair + 9, FLOAT_TYPEV2(v1.zw));
+#elif defined(DATA_A_Q5_0)
+            const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
+
+            const uint ib = idx / 8;
+            const uint iqs = idx & 0x07;
+
+            const float d = float(data_a_packed16[ib].d);
+            const uint uint_qh = uint(data_a_packed16[ib].qh[1]) << 16 | uint(data_a_packed16[ib].qh[0]);
+            const ivec2 qh0 = ivec2(((uint_qh >> 2*iqs) << 4) & 0x10, (uint_qh >> (2*iqs + 12)) & 0x10);
+            const ivec2 qh1 = ivec2(((uint_qh >> (2*iqs + 1)) << 4) & 0x10, (uint_qh >> (2*iqs + 13)) & 0x10);
+
+            const uint vui = uint(data_a_packed16[ib].qs[iqs]);
+            const vec4 v = (vec4((vui & 0xF) | qh0.x, ((vui >> 4) & 0xF) | qh0.y, ((vui >> 8) & 0xF) | qh1.x, (vui >> 12) | qh1.y) - 16.0f) * d;
+            store_a(col, row,     FLOAT_TYPEV2(v.xz));
+            store_a(col, row + 8, FLOAT_TYPEV2(v.yw));
+#elif defined(DATA_A_Q5_1)
+            const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
+
+            const uint ib = idx / 4;
+            const uint iqs = idx & 0x03;
+
+            const vec2 dm = vec2(data_a_packed32[ib].dm);
+            const uint uint_qh = data_a_packed32[ib].qh;
+            const uvec2 qh0 = uvec2(((uint_qh >> 4*iqs) << 4) & 0x10, (uint_qh >> (4*iqs + 12)) & 0x10);
+            const uvec2 qh1 = uvec2(((uint_qh >> (4*iqs + 1)) << 4) & 0x10, (uint_qh >> (4*iqs + 13)) & 0x10);
+            const uvec2 qh2 = uvec2(((uint_qh >> (4*iqs + 2)) << 4) & 0x10, (uint_qh >> (4*iqs + 14)) & 0x10);
+            const uvec2 qh3 = uvec2(((uint_qh >> (4*iqs + 3)) << 4) & 0x10, (uint_qh >> (4*iqs + 15)) & 0x10);
+
+            const uint vui = data_a_packed32[ib].qs[iqs];
+            const vec4 v0 = vec4((vui & 0xF) | qh0.x, ((vui >> 4) & 0xF) | qh0.y, ((vui >> 8) & 0xF) | qh1.x, ((vui >> 12) & 0xF) | qh1.y) * dm.x + dm.y;
+            const vec4 v1 = vec4(((vui >> 16) & 0xF) | qh2.x, ((vui >> 20) & 0xF) | qh2.y, ((vui >> 24) & 0xF) | qh3.x, ((vui >> 28) & 0xF) | qh3.y) * dm.x + dm.y;
+
+            const uint k_pair = row * LOAD_VEC_A / 4;
+            store_a(col, k_pair,     FLOAT_TYPEV2(v0.xz));
+            store_a(col, k_pair + 1, FLOAT_TYPEV2(v1.xz));
+            store_a(col, k_pair + 8, FLOAT_TYPEV2(v0.yw));
+            store_a(col, k_pair + 9, FLOAT_TYPEV2(v1.yw));
+#elif defined(DATA_A_Q8_0)
+            const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
+
+            const uint ib = idx / 8;
+            const uint iqs = idx & 0x07;
+
+            const float d = float(data_a_packed16[ib].d);
+            const i8vec2 v0 = unpack8(int32_t(data_a_packed16[ib].qs[2*iqs])).xy; // vec4 used due to #12147
+            const i8vec2 v1 = unpack8(int32_t(data_a_packed16[ib].qs[2*iqs + 1])).xy;
+            const vec4 v = vec4(v0.x, v0.y, v1.x, v1.y) * d;
+
+            const uint k_pair = row * LOAD_VEC_A / 2;
+            store_a(col, k_pair,     FLOAT_TYPEV2(v.xy));
+            store_a(col, k_pair + 1, FLOAT_TYPEV2(v.zw));
+#elif defined(DATA_A_PTQ1_0)
+            const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
+
+            const uint ib  = idx / 16;
+            const uint grp = idx & 0xfu;      // which 8-element group inside the block
+            const uint e0  = grp * 8u;
+
+            const float d = float(data_a[ib].d);
+
+            const uint k_pair = row * LOAD_VEC_A / 2;
+            [[unroll]] for (uint l = 0; l < 4; ++l) {
+                store_a(col, k_pair + l, FLOAT_TYPEV2(
+                    ptq1_0_trit(ib, 0u, e0 + 2u*l)      * d,
+                    ptq1_0_trit(ib, 0u, e0 + 2u*l + 1u) * d));
+            }
+#elif defined(DATA_A_Q1_0)
+            const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
+
+            const uint ib = idx / 16;
+            const uint iqs = idx & 0xfu;
+
+            const float d = float(data_a[ib].d);
+            const uint bits = uint(data_a[ib].qs[iqs]);
+
+            const uint k_pair = row * LOAD_VEC_A / 2;
+            store_a(col, k_pair,     FLOAT_TYPEV2((bits & 0x01u) != 0u ? d : -d, (bits & 0x02u) != 0u ? d : -d));
+            store_a(col, k_pair + 1, FLOAT_TYPEV2((bits & 0x04u) != 0u ? d : -d, (bits & 0x08u) != 0u ? d : -d));
+            store_a(col, k_pair + 2, FLOAT_TYPEV2((bits & 0x10u) != 0u ? d : -d, (bits & 0x20u) != 0u ? d : -d));
+            store_a(col, k_pair + 3, FLOAT_TYPEV2((bits & 0x40u) != 0u ? d : -d, (bits & 0x80u) != 0u ? d : -d));
+#elif defined(DATA_A_Q2_0)
+            const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
+
+            const uint ib = idx / 16;
+            const uint iqs = idx & 0xfu;
+
+            const FLOAT_TYPE d = FLOAT_TYPE(data_a[ib].d);
+            const uint bits = uint(data_a[ib].qs[iqs]);
+
+            const uint k_pair = row * LOAD_VEC_A / 2;
+            store_a(col, k_pair,     d * (FLOAT_TYPEV2(bits & 3u, (bits >> 2u) & 3u) - FLOAT_TYPEV2(1.0f)));
+            store_a(col, k_pair + 1, d * (FLOAT_TYPEV2((bits >> 4u) & 3u, bits >> 6u) - FLOAT_TYPEV2(1.0f)));
+#elif defined(DATA_A_Q2_K)
+            const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
+
+            const uint ib = idx / 64;                          // 4 values per idx
+            const uint iqs = (idx % 64) * 2;                   // 0,2,4..126
+
+            const uint qsi = (iqs / 64) * 16 + (iqs % 16);     // 0..15
+            const uint scalesi = iqs / 8;                      // 0..15
+            const uint qsshift = ((iqs % 64) / 16) * 2;        // 0,2,4,6
+
+            const vec4 qs = vec4(unpack8((data_a_packed32[ib].qs[qsi / 2] >> qsshift) & 0x03030303));
+            const uint scales = data_a[ib].scales[scalesi];
+            const vec2 dm = vec2(data_a[ib].dm);
+
+            const vec4 v = dm.x * float(scales & 0xF) * qs - dm.y * float(scales >> 4);
+
+            const uint k_pair = row * LOAD_VEC_A / 2;
+            store_a(col, k_pair,     FLOAT_TYPEV2(v.xy));
+            store_a(col, k_pair + 1, FLOAT_TYPEV2(v.zw));
+#elif defined(DATA_A_TQ2_0)
+            const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
+
+            const uint ib = idx / 128;                         // 2 values per idx
+            const uint iqs = (idx % 128) * 2;                  // elem 0,2,4..254
+
+            const uint qsi   = (iqs / 128) * 32 + (iqs % 32);  // byte pair start
+            const uint shift = 2 * ((iqs % 128) / 32);         // 0,2,4,6
+
+            const uvec2 qs = uvec2(data_a[ib].qs[qsi], data_a[ib].qs[qsi + 1]);
+            const float d = float(data_a[ib].d);
+
+            const vec2 v = d * (vec2((qs >> shift) & 3) - 1.0);
+
+            const uint k_pair = row * LOAD_VEC_A / 2;
+            store_a(col, k_pair, FLOAT_TYPEV2(v.xy));
+#elif defined(DATA_A_Q3_K)
+            const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
+
+            const uint ib = idx / 128;                   // 2 values per idx
+            const uint iqs = idx % 128;                  // 0..127
+
+            const uint n = iqs / 64;                     // 0,1
+            const uint qsi = n * 32 + (iqs % 16) * 2;    // 0,2,4..62
+            const uint hmi =          (iqs % 16) * 2;    // 0,2,4..30
+            const uint j = (iqs % 64) / 4;               // 0..3
+            const uint is = iqs / 8;                     // 0..15
+            const uint halfsplit = ((iqs % 64) / 16);    // 0,1,2,3
+            const uint qsshift = halfsplit * 2;          // 0,2,4,6
+
+            const int8_t us = int8_t(((data_a[ib].scales[is % 8] >> (4 * int(is / 8))) & 0xF)
+                                  | (((data_a[ib].scales[8 + (is % 4)] >> (2 * int(is / 4))) & 3) << 4));
+            const float dl = float(data_a[ib].d) * float(us - 32);
+
+            const vec2 qs = vec2(unpack8((uint(data_a_packed16[ib].qs[qsi / 2]) >> qsshift) & 0x0303).xy);
+            const vec2 hm = vec2(unpack8(((uint(data_a_packed16[ib].hmask[hmi / 2]) >> (4 * n + halfsplit)) & 0x0101 ^ 0x0101) << 2).xy);
+
+            store_a(col, row * LOAD_VEC_A / 2, FLOAT_TYPEV2(dl * (qs.x - hm.x),
+                                                              dl * (qs.y - hm.y)));
+#elif defined(DATA_A_Q4_K)
+            const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
+
+            const uint ib = idx / 64;                  // 4 values per idx
+            const uint iqs = (idx % 64) * 2;           // 0,2,4..126
+
+            const uint n = iqs / 32;                   // 0,1,2,3
+            const uint b = (iqs % 32) / 16;            // 0,1
+            const uint is = 2 * n + b;                 // 0..7
+            const uint qsi = n * 32 + (iqs % 16) * 2;  // 0,2,4..126
+
+            const vec2 loadd = vec2(data_a[ib].dm);
+
+            const uvec3 scales = uvec3(data_a_packed32[ib].scales[0],
+                                       data_a_packed32[ib].scales[1],
+                                       data_a_packed32[ib].scales[2]);
+            const uint scalesoffs = (is & 3) * 8;
+
+            const uint scidx0 = (is < 4) ? 0 : 2;
+            const uint scidxshift0 = scalesoffs;
+            const uint scidxshift1 = (is < 4) ? scalesoffs : scalesoffs + 2;
+            const uint mbidx0 = (is < 4) ? 1 : 2;
+            const uint mbidxshift0 = (is < 4) ? scalesoffs : scalesoffs + 4;
+            const uint mbidxshift1 = (is < 4) ? scalesoffs : scalesoffs + 2;
+
+            const uint8_t sc    = uint8_t(((scales[scidx0] >> scidxshift0) & 0xF) | ((scales[0] >> scidxshift1) & 0x30));
+            const uint8_t mbyte = uint8_t(((scales[mbidx0] >> mbidxshift0) & 0xF) | ((scales[1] >> mbidxshift1) & 0x30));
+
+            const float d = loadd.x * sc;
+            const float m = -loadd.y * mbyte;
+
+            const vec4 q = vec4(unpack8((data_a_packed32[ib].qs[qsi / 4] >> (b * 4)) & 0x0F0F0F0F));
+
+            const uint k_pair = row * LOAD_VEC_A / 2;
+            store_a(col, k_pair,     FLOAT_TYPEV2(fma(d, q.x, m), fma(d, q.y, m)));
+            store_a(col, k_pair + 1, FLOAT_TYPEV2(fma(d, q.z, m), fma(d, q.w, m)));
+#elif defined(DATA_A_Q5_K)
+            const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
+
+            const uint ib = idx / 64;                  // 4 values per idx
+            const uint iqs = (idx % 64) * 2;           // 0,2,4..126
+
+            const uint n = iqs / 32;                   // 0,1,2,3
+            const uint b = (iqs % 32) / 16;            // 0,1
+            const uint is = 2 * n + b;                 // 0..7
+            const uint qsi = n * 32 + (iqs % 16) * 2;  // 0,2,4..126
+            const uint qhi = (iqs % 16) * 2;           // 0,2,4..30
+
+            const vec2 loadd = vec2(data_a[ib].dm);
+
+            const uvec3 scales = uvec3(data_a_packed32[ib].scales[0],
+                                       data_a_packed32[ib].scales[1],
+                                       data_a_packed32[ib].scales[2]);
+            const uint scalesoffs = (is & 3) * 8;
+
+            const uint scidx0 = (is < 4) ? 0 : 2;
+            const uint scidxshift0 = scalesoffs;
+            const uint scidxshift1 = (is < 4) ? scalesoffs : scalesoffs + 2;
+            const uint mbidx0 = (is < 4) ? 1 : 2;
+            const uint mbidxshift0 = (is < 4) ? scalesoffs : scalesoffs + 4;
+            const uint mbidxshift1 = (is < 4) ? scalesoffs : scalesoffs + 2;
+
+            const uint8_t sc    = uint8_t(((scales[scidx0] >> scidxshift0) & 0xF) | ((scales[0] >> scidxshift1) & 0x30));
+            const uint8_t mbyte = uint8_t(((scales[mbidx0] >> mbidxshift0) & 0xF) | ((scales[1] >> mbidxshift1) & 0x30));
+
+            const float d = loadd.x * sc;
+            const float m = -loadd.y * mbyte;
+
+            const uint qs = (data_a_packed32[ib].qs[qsi / 4] >> (b * 4)) & 0x0F0F0F0F;
+            const uint qh = ((data_a_packed32[ib].qh[qhi / 4] >> (iqs / 16)) & 0x01010101) << 4;
+            const vec4 q = vec4(unpack8(qs | qh));
+
+            const uint k_pair = row * LOAD_VEC_A / 2;
+            store_a(col, k_pair,     FLOAT_TYPEV2(fma(d, q.x, m), fma(d, q.y, m)));
+            store_a(col, k_pair + 1, FLOAT_TYPEV2(fma(d, q.z, m), fma(d, q.w, m)));
+#elif defined(DATA_A_Q6_K)
+            const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
+
+            const uint ib = idx / 128;                  // 2 values per idx
+            const uint iqs = idx % 128;                 // 0..127
+
+            const uint n = iqs / 64;                    // 0,1
+            const uint b = ((iqs % 64) / 32) * 4;       // 0,4
+            const uint is_b = (iqs % 16) / 8;           // 0,1
+            const uint qhshift = ((iqs % 64) / 16) * 2; // 0,2,4,6
+            const uint is = 8 * n + qhshift + is_b;     // 0..15
+            const uint qsi = n * 32 + (iqs % 32);       // 0..63
+            const uint qhi = n * 16 + (iqs % 16);       // 0..31
+
+            const float dscale = float(data_a[ib].d) * float(data_a[ib].scales[is]);
+
+            const uint ql = (uint(data_a_packed16[ib].ql[qsi]) >> b) & 0x0F0F;
+            const uint qh = (uint(data_a_packed16[ib].qh[qhi]) >> qhshift) & 0x0303;
+            const vec2 q = (vec2(unpack8(ql | (qh << 4)).xy) - 32) * dscale;
+
+            store_a(col, row * LOAD_VEC_A / 2, FLOAT_TYPEV2(q.x, q.y));
 #elif defined(DATA_A_IQ1_S)
     const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
     const uint k_pair = row * LOAD_VEC_A / 2;
