@@ -399,6 +399,12 @@ private:
     std::array<llm_graph_result_ptr, 2> gf_res_prev;
     llm_graph_result_ptr gf_res_reserve;
 
+    // the Hadamard transforms this context's graphs consult: the model's own,
+    // plus the target's when the model borrows its token embeddings or output
+    // head through ctx_other (those tensors keep the target's folding)
+    llama_hadamard_rotations hadamard_rotations;
+    llama_hadamard_rotations hadamard_inverses;
+
     // one-time Hadamard transform-coverage check on the first built graph
     bool hadamard_verified = false;
 
