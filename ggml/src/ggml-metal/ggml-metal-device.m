@@ -293,15 +293,7 @@ static NSString * ggml_metal_library_flatten_source(NSString * path_source, NSEr
     return src;
 }
 
-// Compile all per-kind libraries in parallel. `source_for_kind` returns the MSL
-// source for a kind (the helper takes ownership and releases it), or nil with
-// the tensor API headers (<metal_tensor>, MetalPerformancePrimitives) are only
-// exposed to the shader compiler at Metal language version 4.0. When the
-// language version is left unset, the runtime picks a default from the SDK the
-// binary was linked against, so a binary built with a pre-26 SDK fails the
-// tensor API probe at runtime on M5/A19 devices (error compiling source) even
-// though the OS supports it. Request 4.0 explicitly whenever the device has
-// the tensor API (Metal4 family, which implies an OS that accepts 4.0).
+// tensor API headers need Metal 4.0, and an unset language version follows the build SDK
 static void ggml_metal_compile_options_set_lang(MTLCompileOptions * options, bool has_tensor) {
     if (!has_tensor) {
         return;
@@ -310,6 +302,8 @@ static void ggml_metal_compile_options_set_lang(MTLCompileOptions * options, boo
     options.languageVersion = (MTLLanguageVersion) MTLLanguageVersion4_0_GGML;
 }
 
+// Compile all per-kind libraries in parallel. `source_for_kind` returns the MSL
+// source for a kind (the helper takes ownership and releases it), or nil with
 // *err set on failure. On success the objs[] slots are populated and the routing
 // index is built; on any failure every error is logged and false is returned
 // (the caller is responsible for freeing `res`).
@@ -1145,8 +1139,71 @@ ggml_metal_device_t ggml_metal_device_init(int device, int n_devices) {
                     dev->props.has_bfloat = false;
                 }
 
-                dev->props.has_tensor = [dev->mtl_device supportsFamily:MTLGPUFamilyMetal4_GGML];
-                if (getenv("GGML_METAL_TENSOR_DISABLE") != NULL) {
+            dev->props.has_tensor = [dev->mtl_device supportsFamily:MTLGPUFamilyMetal4_GGML];
+            if (getenv("GGML_METAL_TENSOR_DISABLE") != NULL) {
+                dev->props.has_tensor = false;
+            }
+
+#if !GGML_METAL_EMBED_LIBRARY
+            // default.metallib has no tensor kernels, so tensor dispatch would use the wrong tile sizes
+            if (dev->props.has_tensor) {
+                GGML_LOG_INFO("%s: tensor API disabled - precompiled metal library has no tensor kernels\n", __func__);
+                dev->props.has_tensor = false;
+            }
+#endif
+
+            // note: disable the tensor API by default for old chips because with the current implementation it is not useful
+            // - M2 Ultra:   ~5% slower
+            // - M4, M4 Max: no significant difference
+            //
+            // TODO: try to update the tensor API kernels to at least match the simdgroup performance
+            if (getenv("GGML_METAL_TENSOR_ENABLE") == NULL &&
+                ![[dev->mtl_device name] containsString:@"M5"] &&
+                ![[dev->mtl_device name] containsString:@"M6"] &&
+                ![[dev->mtl_device name] containsString:@"A19"] &&
+                ![[dev->mtl_device name] containsString:@"A20"]) {
+                GGML_LOG_INFO("%s: tensor API disabled for pre-M5 and pre-A19 devices\n", __func__);
+                dev->props.has_tensor = false;
+            }
+
+            // double-check that the tensor API compiles
+            if (dev->props.has_tensor) {
+                const char * src_tensor_f16 = "\n"
+                    "#include <metal_stdlib> \n"
+                    "#include <metal_tensor> \n"
+                    "#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h> \n"
+                    " \n"
+                    "using namespace metal; \n"
+                    "using namespace mpp::tensor_ops; \n"
+                    " \n"
+                    "kernel void dummy_kernel( \n"
+                    "    tensor<device  half, dextents<int32_t, 2>> A [[buffer(0)]], \n"
+                    "    tensor<device  half, dextents<int32_t, 2>> B [[buffer(1)]], \n"
+                    "    device float * C [[buffer(2)]], \n"
+                    "    uint2 tgid [[threadgroup_position_in_grid]]) \n"
+                    "{ \n"
+                    "    auto tA = A.slice(0, (int)tgid.y); \n"
+                    "    auto tB = B.slice((int)tgid.x, 0); \n"
+                    " \n"
+                    "    matmul2d< \n"
+                    "        matmul2d_descriptor(16, 16, dynamic_extent), \n"
+                    "        execution_simdgroups<4>> mm; \n"
+                    " \n"
+                    "    auto cT = mm.get_destination_cooperative_tensor<decltype(tA), decltype(tB), float>(); \n"
+                    " \n"
+                    "    auto sA = tA.slice(0, 0); \n"
+                    "    auto sB = tB.slice(0, 0); \n"
+                    "    mm.run(sB, sA, cT); \n"
+                    " \n"
+                    "    auto tC = tensor<device float, dextents<int32_t, 2>, tensor_inline>(C, dextents<int32_t, 2>(16, 16)); \n"
+                    " \n"
+                    "    cT.store(tC); \n"
+                    "}";
+
+                GGML_LOG_INFO("%s: testing tensor API for f16 support\n", __func__);
+                ggml_metal_library_t lib = ggml_metal_library_init_from_source(dev, src_tensor_f16, false);
+                if (lib == NULL) {
+                    GGML_LOG_WARN("%s: - the tensor API is not supported in this environment - disabling\n", __func__);
                     dev->props.has_tensor = false;
                 }
 
