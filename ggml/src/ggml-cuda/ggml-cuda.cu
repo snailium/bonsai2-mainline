@@ -3454,6 +3454,18 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
 
     ggml_tensor * node = cgraph->nodes[i];
 
+    if (node->op == GGML_OP_MUL) {
+        ggml_cuda_moe_weighted_reduction_match match;
+        if (ggml_cuda_match_moe_weighted_reduction(cgraph, i, match)) {
+            const int output_idx = i + match.node_count - 1;
+            if (ggml_cuda_check_fusion_memory_ranges(cgraph, i, match.node_count, &output_idx, 1)) {
+                ggml_cuda_op_moe_weighted_reduction(
+                    *cuda_ctx, match.experts, match.expert_scale, match.weights, match.dst);
+                return match.node_count - 1;
+            }
+        }
+    }
+
     // GB10 prefill: apply SWIGLU while quantizing the activation consumed by the
     // following low-bit down projection. This avoids materializing and rereading
     // the GLU output and removes one launch per transformer block.

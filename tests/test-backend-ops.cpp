@@ -5201,7 +5201,8 @@ struct test_fwht_signed : public test_case {
     }
 };
 
-static void init_mul_mat_id_tensors(ggml_context * ctx, int n_mats) {
+
+static void init_mul_mat_id_ids(ggml_context * ctx, int n_mats) {
     std::random_device rd;
     std::default_random_engine rng(rd());
     for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != NULL; t = ggml_get_next_tensor(ctx, t)) {
@@ -10040,6 +10041,12 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_fwht_signed(8192, 8192, 2));
     test_cases.emplace_back(new test_fwht_signed(8192, 8192, 1,  GGML_TYPE_F16));
     test_cases.emplace_back(new test_mul_mat_hadamard(GGML_TYPE_F32, GGML_TYPE_F32, 32, 1, 32)); // too small (N<64)
+    test_cases.emplace_back(new test_mul_mat_hadamard(GGML_TYPE_F32, GGML_TYPE_F32, 1024, 1, 1024)); // too big (N>512)
+    test_cases.emplace_back(new test_mul_mat_hadamard(GGML_TYPE_F32, GGML_TYPE_F16, 128, 1, 128));
+    test_cases.emplace_back(new test_mul_mat_hadamard(GGML_TYPE_F32, GGML_TYPE_F16, 256, 1, 256));
+    test_cases.emplace_back(new test_mul_mat_hadamard(GGML_TYPE_F32, GGML_TYPE_F16, 512, 1, 512));
+    test_cases.emplace_back(new test_mul_mat_hadamard(GGML_TYPE_F32, GGML_TYPE_F16, 128, 4, 128, {2, 3}));
+    test_cases.emplace_back(new test_mul_mat_hadamard(GGML_TYPE_F32, GGML_TYPE_F16, 256, 512, 256)); // many rows
 
 #if 0
     // > 4GB A matrix. Too slow to be enabled by default.

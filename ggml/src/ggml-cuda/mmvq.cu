@@ -724,16 +724,38 @@ static __global__ void mul_mat_vec_q(
     const block_q8_1 * y = ((const block_q8_1 *) vy) + sample_y*stride_sample_y + channel_y*stride_channel_y;
     const int kbx_offset = sample_x*stride_sample_x + channel_x*stride_channel_x + row0*stride_row_x;
 
-    if constexpr ((type == GGML_TYPE_Q1_0 || type == GGML_TYPE_Q2_0 || type == GGML_TYPE_PQ2_0) &&
-                  table_id == MMVQ_PARAMETERS_GB10) {
-        using block_t = std::conditional_t<type == GGML_TYPE_Q1_0, block_q1_0,
-            std::conditional_t<type == GGML_TYPE_Q2_0, block_q2_0, block_pq2_0>>;
+    for (int kbx = tid / (qi/vdr); kbx < blocks_per_row_x; kbx += blocks_per_iter) {
+        const int kby = kbx * (qk/QK8_1); // y block index that aligns with kbx
+
+        // x block quant index when casting the quants to int
+        const int kqs = vdr * (tid % (qi/vdr));
+
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == GGML_CUDA_CC_DGX_SPARK
+        // start the next iterations' weight loads early
+        if constexpr (mmvq_should_prefetch(type)) {
+            constexpr int pf_dist = 2; // loop iterations, not blocks
+            const int kbx_pf = kbx + pf_dist*blocks_per_iter;
+            if (kbx_pf < blocks_per_row_x) {
+#pragma unroll
+                for (int i = 0; i < rows_per_cuda_block; ++i) {
+                    const size_t off = (size_t)(kbx_offset + i*stride_row_x + kbx_pf) * ggml_cuda_type_traits<type>::bs;
+                    mmvq_prefetch_l2((const char *) vx + off);
+                    if constexpr (has_fusion) {
+                        if (use_gate) {
+                            mmvq_prefetch_l2((const char *) vgate + off);
+                        }
+                    }
+                }
+            }
+        }
+#endif
+
         // These packed AoS formats are scoreboard-latency bound on GB10. Prefetch one
         // K iteration ahead; only the first lane that consumes a quant block issues it.
-#pragma unroll (type == GGML_TYPE_Q2_0 ? 2 : 1)
-        for (int kbx = tid / (qi/vdr); kbx < blocks_per_row_x; kbx += blocks_per_iter) {
-            const int kby = kbx * (qk/QK8_1);
-            const int kqs = vdr * (tid % (qi/vdr));
+        if constexpr ((type == GGML_TYPE_Q1_0 || type == GGML_TYPE_Q2_0 || type == GGML_TYPE_PQ2_0) &&
+                      table_id == MMVQ_PARAMETERS_GB10) {
+            using block_t = std::conditional_t<type == GGML_TYPE_Q1_0, block_q1_0,
+                std::conditional_t<type == GGML_TYPE_Q2_0, block_q2_0, block_pq2_0>>;
             const int kbx_prefetch = kbx + blocks_per_iter;
             if (kbx_prefetch < blocks_per_row_x && tid % (qi/vdr) == 0) {
 #pragma unroll
@@ -750,27 +772,7 @@ static __global__ void mul_mat_vec_q(
 #endif
                 }
             }
-#pragma unroll
-            for (int j = 0; j < ncols_dst; ++j) {
-#pragma unroll
-                for (int i = 0; i < rows_per_cuda_block; ++i) {
-                    tmp[j][i] += vec_dot_q_cuda(
-                        vx, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs);
-                    if constexpr (has_fusion) {
-                        if constexpr (has_gate) {
-                            tmp_gate[j][i] += vec_dot_q_cuda(
-                                vgate, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs);
-                        }
-                    }
-                }
-            }
         }
-    } else {
-        for (int kbx = tid / (qi/vdr); kbx < blocks_per_row_x; kbx += blocks_per_iter) {
-            const int kby = kbx * (qk/QK8_1); // y block index that aligns with kbx
-
-            // x block quant index when casting the quants to int
-            const int kqs = vdr * (tid % (qi/vdr));
 
 #if !defined(GGML_USE_HIP)
         if constexpr (type == GGML_TYPE_PTQ1_0 && ncols_dst > 1 && ncols_dst <= 3) {
@@ -812,7 +814,6 @@ static __global__ void mul_mat_vec_q(
                     }
                 }
             }
-        }
         }
     }
 

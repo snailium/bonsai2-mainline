@@ -6514,6 +6514,11 @@ static bool do_ggml_backend_sycl_device_supports_op(ggml_backend_dev_t dev, cons
                     return false;
                 }
 
+                if (src0_type == GGML_TYPE_TQ2_0 || src0_type == GGML_TYPE_TQ1_0) {
+                    return false;
+                }
+
+
                 if (ggml_is_quantized(src0_type) &&
                     !ggml_sycl_supports_mmvq(src0_type) &&
                     !ggml_sycl_supports_dmmv(src0_type) &&

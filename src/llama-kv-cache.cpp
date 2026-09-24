@@ -14,6 +14,7 @@
 #include <limits>
 #include <map>
 #include <stdexcept>
+#include <unordered_map>
 #include <string>
 
 static bool ggml_is_power_of_2(int n) {

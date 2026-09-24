@@ -6,7 +6,6 @@
 #include "ggml.h"
 #include "llama.h"
 
-#include <cmath>
 #include <limits>
 #ifdef LLAMA_DSPARK_MARKOV_CUDA
 #    include "dspark-markov.h"
@@ -26,9 +25,10 @@
 
 #include <algorithm>
 #include <cassert>
-#include <cinttypes>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <cinttypes>
 #include <iomanip>
 #include <map>
 
@@ -262,7 +262,7 @@ struct common_speculative_impl_draft_dspark : public common_speculative_impl {
     std::vector<int32_t> i_batch_end;
 
     common_speculative_impl_draft_dspark(const common_params_speculative & params, uint32_t n_seq) :
-        common_speculative_impl(COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK, n_seq),
+        common_speculative_impl(COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK, n_seq, params.draft.n_max),
         params(params.draft) {
         auto * ctx_dft = this->params.ctx_dft;
         auto * ctx_tgt = this->params.ctx_tgt;
@@ -593,7 +593,7 @@ struct common_speculative_impl_draft_dspark : public common_speculative_impl {
             auto & pos  = ctx_pos[seq_id];
 
             int64_t       L       = n_cache[seq_id];
-            const int64_t start   = dp.n_past;
+            const int64_t start   = dp.pos0;
             int64_t       ctx_len = start - L;
 
             if (ctx_len <= 0) {
@@ -1657,6 +1657,10 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
     int32_t     block_size    = 0;
     llama_token mask_token_id = 0;
 
+    bool    is_dflash2     = false;
+    bool    is_mrope       = false;
+    int32_t selector_top_k = 0;
+
     // draft-dspark: the draft carries a Markov head. Comes from the model, not the
     // requested type. The DSpark path also truncates on confidence, and for
     // sample_from_anchor models it starts one row earlier.
@@ -1723,11 +1727,20 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
         is_dflash2     = selector_top_k > 0;
         mask_token_id = llama_vocab_mask(llama_model_get_vocab(model_dft));
 
+        if (is_dspark && this->params.p_min > 0.0f) {
+            char buf[16] = {};
+            const bool has_conf =
+                llama_model_meta_val_str(model_dft, "dflash.has_confidence_head", buf, sizeof(buf)) < 0 ||
+                std::strcmp(buf, "true") == 0;
+            if (!has_conf) {
+                throw std::runtime_error("DSpark draft has no confidence head: please set --spec-draft-p-min 0");
+            }
+        }
+
         // without a mask token every masked slot is drafted as token id -1: runs, accepts nothing,
         // and reads as a bad drafter instead of a bad conversion that dropped the vocab
         GGML_ASSERT(mask_token_id != LLAMA_TOKEN_NULL &&
                     "draft model has no mask token: check tokenizer.ggml.mask_token_id and tokenizer.ggml.model (a 'none' stub skips the vocab) in the GGUF");
-
         LOG_INF("%s: adding speculative implementation '%s'\n", __func__, common_speculative_type_to_str(type).c_str());
         LOG_INF("%s: - n_max=%d, n_min=%d, p_min=%.2f\n", __func__, this->params.n_max, this->params.n_min, this->params.p_min);
         LOG_INF("%s: - block_size=%d, mask_token_id=%d, n_extract=%u, sample_from_anchor=%s, lineage=%s\n", __func__,

@@ -252,9 +252,8 @@ llama_context::llama_context(
         hadamard_inverses .insert(other.hadamard_inverses .begin(), other.hadamard_inverses .end());
     }
 
-    auto rope_scaling_type = params.rope_scaling_type;
-    if (rope_scaling_type == LLAMA_ROPE_SCALING_TYPE_UNSPECIFIED) {
-        rope_scaling_type = hparams.rope_scaling_type_train;
+    if (cparams.rope_scaling_type == LLAMA_ROPE_SCALING_TYPE_UNSPECIFIED) {
+        cparams.rope_scaling_type = hparams.rope_scaling_type_train;
     }
 
     if (cparams.rope_scaling_type == LLAMA_ROPE_SCALING_TYPE_NONE) {
@@ -2794,6 +2793,7 @@ ggml_cgraph * llama_context::graph_reserve(
 
     auto * gf = model.build_graph(gparams);
 
+    this->n_input_tensors = llama_graph_n_input_tensors(gf);
     // verify transform coverage on the pristine graph: after scheduling,
     // cross-backend copies break the producer chain the check follows
     if (!hadamard_verified && gf && (!hadamard_rotations.empty() || !hadamard_inverses.empty())) {

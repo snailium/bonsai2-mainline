@@ -627,6 +627,43 @@ class ModelBase:
             raise ValueError(f"Can not map tensor {name!r}")
         return new_name
 
+    def prepare_qkv_fusion(self) -> None:
+        self._fusable_qkv_weight_layers.clear()
+        self._fusable_qkv_bias_layers.clear()
+        if not self.fuse_qkv or gguf.MODEL_TENSOR.ATTN_QKV not in gguf.MODEL_TENSORS[self.model_arch]:
+            return
+
+        qkv_types = {
+            gguf.MODEL_TENSOR.ATTN_Q,
+            gguf.MODEL_TENSOR.ATTN_K,
+            gguf.MODEL_TENSOR.ATTN_V,
+        }
+        weights: dict[int, set[gguf.MODEL_TENSOR]] = {}
+        biases: dict[int, set[gguf.MODEL_TENSOR]] = {}
+
+        for name in self.model_tensors:
+            mapped = self.tensor_map.get_type_and_name(name, try_suffixes=(".weight", ".bias"))
+            if mapped is None:
+                continue
+            tensor_type, new_name = mapped
+            if tensor_type not in qkv_types:
+                continue
+
+            bid = next((int(part) for part in new_name.split(".") if part.isdecimal()), None)
+            if bid is None:
+                continue
+            if new_name.endswith(".weight"):
+                weights.setdefault(bid, set()).add(tensor_type)
+            elif new_name.endswith(".bias"):
+                biases.setdefault(bid, set()).add(tensor_type)
+
+        for bid, weight_types in weights.items():
+            bias_types = biases.get(bid, set())
+            if weight_types == qkv_types and (not bias_types or bias_types == qkv_types):
+                self._fusable_qkv_weight_layers.add(bid)
+                if bias_types:
+                    self._fusable_qkv_bias_layers.add(bid)
+
     def hadamard_folded_names(self) -> set[str]:
         """Source-tensor names folded under a Hadamard manifest, or empty."""
         cached = getattr(self, "_hadamard_folded_names", None)
@@ -641,22 +678,15 @@ class ModelBase:
                         names.add(record["name"])
         self._hadamard_folded_names = names
         return names
-
     def add_hadamard_metadata(self) -> None:
         """Transfer a packed-checkpoint transform contract into GGUF metadata."""
-        manifest_path = self.dir_model / "hadamard_packing.json"
         if not manifest_path.is_file():
-            return
-
-        with manifest_path.open("r", encoding="utf-8") as f:
             manifest = json.load(f)
-
         schema_version = manifest.get("schema_version")
         if schema_version not in (1, 2, 3) or manifest.get("kind") != "hadamard-weight-fold":
             raise ValueError(f"Unsupported Hadamard manifest: {manifest_path}")
         if manifest.get("status") != "requires-matching-runtime":
             raise ValueError(f"Unexpected Hadamard manifest status: {manifest.get('status')!r}")
-
         transform = manifest.get("transform")
         if not isinstance(transform, dict):
             raise ValueError("Hadamard manifest is missing transform metadata")
@@ -685,11 +715,9 @@ class ModelBase:
                     raise ValueError(f"invalid sign vector for width {width}")
                 sign_widths.append(width)
                 sign_values.extend(int(v) for v in vec)
-
         tensor_records = manifest.get("tensors")
         if not isinstance(tensor_records, list) or not tensor_records:
             raise ValueError("Hadamard manifest has no folded tensors")
-
         # The runtime applies the activation transform only where the graph goes through
         # build_lora_mm/build_lora_mm_id. Restrict the contract to architectures and tensor
         # kinds verified to route every matmul through those helpers; anything else must
@@ -701,12 +729,9 @@ class ModelBase:
             gguf.MODEL_ARCH.QWEN35,
             gguf.MODEL_ARCH.QWEN35MOE,
             gguf.MODEL_ARCH.QWEN3NEXT,
-        }
         if self.model_arch not in _HADAMARD_ARCHS:
-            raise ValueError(
                 f"Hadamard folding is not verified for arch {self.model_arch.name}; "
                 "the runtime would load the GGUF without applying the activation transform"
-            )
         _HADAMARD_KINDS = re.compile(
             r"output\.weight|"
             r"blk\.\d+\.("
@@ -716,7 +741,6 @@ class ModelBase:
             r"|ffn_gate_shexp|ffn_up_shexp|ffn_down_shexp"
             r"|ssm_out"
             r")\.weight"
-        )
         weight_names: list[str] = []
         inverse_weight_names: list[str] = []
         for record in tensor_records:
@@ -735,19 +759,14 @@ class ModelBase:
                 # the runtime applies the inverse transform only to the token-embedding
                 # lookup; any other latent table would load and silently stay rotated
                 if mapped != "token_embd.weight":
-                    raise ValueError(
                         f"Hadamard tensor {record['name']!r} maps to {mapped!r}, which is not a "
                         "verified inverse-after-lookup table"
-                    )
                 inverse_weight_names.append(mapped)
             else:
                 if not _HADAMARD_KINDS.fullmatch(mapped):
-                    raise ValueError(
                         f"Hadamard tensor {record['name']!r} maps to {mapped!r}, which is not on a "
                         "verified Hadamard-aware matmul path"
-                    )
                 weight_names.append(mapped)
-
         tied_output = manifest.get("tied_output", False)
         if not isinstance(tied_output, bool) or (schema_version == 3) != tied_output:
             raise ValueError("Hadamard schema 3 requires tied_output=true; older schemas forbid it")
@@ -764,14 +783,12 @@ class ModelBase:
             self.gguf_writer.add_bool("prism.hadamard.tied_output", True)
         elif "token_embd.weight" in inverse_weight_names and self.hparams.get("tie_word_embeddings", False):
             raise ValueError("A tied latent embedding requires Hadamard schema 3 and tied_output=true")
-
         self.gguf_writer.add_uint32("prism.hadamard.version", 2 if tied_output else 1)
         self.gguf_writer.add_uint32("prism.hadamard.block_size", block_size)
         self.gguf_writer.add_string("prism.hadamard.transform", "normalized-sylvester-walsh-hadamard")
         self.gguf_writer.add_string("prism.hadamard.axis", "input-last-dimension")
         self.gguf_writer.add_string("prism.hadamard.sign_mode", sign_mode)
         self.gguf_writer.add_array("prism.hadamard.weight_names", weight_names)
-        if sign_mode == "explicit":
             self.gguf_writer.add_array("prism.hadamard.sign_widths", sign_widths)
             self.gguf_writer.add_array("prism.hadamard.sign_values", sign_values)
         if inverse_weight_names:
@@ -781,7 +798,6 @@ class ModelBase:
             logger.info("GGUF Hadamard: linear-attention out_proj kept in grouped V order")
         logger.info("GGUF Hadamard contract: H%d, sign_mode=%s, %d folded weight(s), %d inverse-lookup",
                     block_size, sign_mode, len(weight_names), len(inverse_weight_names))
-
     def set_gguf_parameters(self):
         raise NotImplementedError("set_gguf_parameters() must be implemented in subclasses")
 

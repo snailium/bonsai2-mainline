@@ -529,6 +529,7 @@ class MODEL_ARCH(IntEnum):
     QWEN3VLMOE       = auto()
     QWEN35           = auto()
     QWEN35MOE        = auto()
+    QWEN4EXP         = auto()
     DSPARK           = auto()
     PHI2             = auto()
     PHI3             = auto()
@@ -1214,6 +1215,13 @@ class MODEL_TENSOR(IntEnum):
     DSPARK_MARKOV_W1       = auto()  # markov head: prev-token embed
     DSPARK_MARKOV_W2       = auto()  # markov head: bias projection
     DSPARK_CONF_PROJ       = auto()  # confidence head
+    DFLASH_ATTN_CONV_BASE  = auto()
+    DFLASH_ATTN_CONV_PROJ  = auto()
+    DFLASH_FFN_CONV_BASE   = auto()
+    DFLASH_FFN_CONV_PROJ   = auto()
+    DFLASH_SELECTOR_PREV   = auto()
+    DFLASH_SELECTOR_NEXT   = auto()
+    DFLASH_SELECTOR_HIDDEN = auto()
     # dfly
     DFLY_LAYER_FUSION      = auto()  # per-draft-layer context mixing logits
     DFLY_CTX_NORM          = auto()  # post-fusion context norm
@@ -1294,6 +1302,7 @@ MODEL_ARCH_NAMES: dict[MODEL_ARCH, str] = {
     MODEL_ARCH.QWEN3VLMOE:       "qwen3vlmoe",
     MODEL_ARCH.QWEN35:           "qwen35",
     MODEL_ARCH.QWEN35MOE:        "qwen35moe",
+    MODEL_ARCH.QWEN4EXP:         "qwen4exp",
     MODEL_ARCH.DSPARK:           "dspark",
     MODEL_ARCH.PHI2:             "phi2",
     MODEL_ARCH.PHI3:             "phi3",

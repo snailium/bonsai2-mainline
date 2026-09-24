@@ -344,6 +344,8 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
             return new llama_model_kimi_k3(params);
         case LLM_ARCH_STEP35:
             return new llama_model_step35(params);
+        case LLM_ARCH_SPARK2_5:
+            return new llama_model_spark2_5(params);
         case LLM_ARCH_DSPARK:
             return new llama_model_dspark(params);
         default:
@@ -3127,23 +3129,24 @@ ggml_cgraph * llama_model::build_graph(const llm_graph_params & params) const {
 
 llama_model_params llama_model_default_params() {
     llama_model_params result = {
-        /*.dspark_head_source          =*/nullptr,
-        /*.devices                     =*/nullptr,
-        /*.tensor_buft_overrides       =*/nullptr,
-        /*.n_gpu_layers                =*/-1,
-        /*.split_mode                  =*/LLAMA_SPLIT_MODE_LAYER,
-        /*.load_mode                   =*/LLAMA_LOAD_MODE_AUTO,
-        /*.main_gpu                    =*/0,
-        /*.tensor_split                =*/nullptr,
-        /*.progress_callback           =*/nullptr,
-        /*.progress_callback_user_data =*/nullptr,
-        /*.kv_overrides                =*/nullptr,
-        /*.vocab_only                  =*/false,
-        /*.check_tensors               =*/false,
-        /*.use_extra_bufts             =*/true,
-        /*.no_host                     =*/false,
-        /*.no_alloc                    =*/false,
-        /*.load_mtp                    =*/false,
+        /*.dspark_head_source          =*/ nullptr,
+        /*.devices                     =*/ nullptr,
+        /*.tensor_buft_overrides       =*/ nullptr,
+        /*.n_gpu_layers                =*/ -1,
+        /*.split_mode                  =*/ LLAMA_SPLIT_MODE_LAYER,
+        /*.load_mode                   =*/ LLAMA_LOAD_MODE_AUTO,
+        /*.lazy_mode                   =*/ LLAMA_LAZY_MODE_AUTO,
+        /*.main_gpu                    =*/ 0,
+        /*.tensor_split                =*/ nullptr,
+        /*.progress_callback           =*/ nullptr,
+        /*.progress_callback_user_data =*/ nullptr,
+        /*.kv_overrides                =*/ nullptr,
+        /*.vocab_only                  =*/ false,
+        /*.check_tensors               =*/ false,
+        /*.use_extra_bufts             =*/ true,
+        /*.no_host                     =*/ false,
+        /*.no_alloc                    =*/ false,
+        /*.load_mtp                    =*/ false,
     };
 
     return result;

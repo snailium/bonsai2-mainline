@@ -1734,25 +1734,6 @@ int ggml_metal_op_ssm_conv(ggml_metal_op_t ctx, int idx) {
     ggml_metal_library_t lib = ctx->lib;
     ggml_metal_encoder_t enc = ctx->enc;
 
-    // conv followed by a silu that is its only consumer: apply the silu in the conv kernel
-    // and write the silu's output directly
-    ggml_tensor * out = op;
-    bool fuse_silu = false;
-    {
-        static constexpr ggml_op ops[2] = { GGML_OP_SSM_CONV, GGML_OP_UNARY };
-        if (ctx->use_fusion && ctx->can_fuse(idx, ops, 2)) {
-            ggml_tensor * un = ctx->node(idx + 1);
-            if (ggml_get_unary_op(un) == GGML_UNARY_OP_SILU && un->src[0] == op &&
-                un->type == GGML_TYPE_F32 && ggml_is_contiguous(un) && ggml_are_same_shape(un, op)) {
-                if (!ggml_metal_op_concurrency_check(ctx, un)) {
-                    ggml_metal_op_concurrency_reset(ctx);
-                }
-                out = un;
-                fuse_silu = true;
-            }
-        }
-    }
-
     GGML_TENSOR_LOCALS( int32_t, ne0, op->src[0], ne);
     GGML_TENSOR_LOCALS(uint64_t, nb0, op->src[0], nb);
     GGML_TENSOR_LOCALS( int32_t, ne1, op->src[1], ne);
@@ -1808,31 +1789,35 @@ int ggml_metal_op_ssm_conv(ggml_metal_op_t ctx, int idx) {
         else if (ne1 > 4  ) BATCH_SIZE = 8;
         else                BATCH_SIZE = 2;
 
-        auto pipeline = ggml_metal_library_get_pipeline_ssm_conv_batched(lib, op, BATCH_SIZE, fuse_silu);
+        auto pipeline = ggml_metal_library_get_pipeline_ssm_conv_batched(lib, op, BATCH_SIZE, (int32_t) ne10, use_silu);
 
         ggml_metal_encoder_set_pipeline(enc, pipeline);
         ggml_metal_encoder_set_bytes(enc, &args, sizeof(args), 0);
         ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(op->src[0]), 1);
         ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(op->src[1]), 2);
-        ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(out),        3);
+        ggml_metal_encoder_set_buffer(enc, bid_dst, 3);
 
         // Dispatch: ne01 rows, ceil(ne1/BATCH_SIZE) token batches, ne02 sequences
         // Each threadgroup has BATCH_SIZE threads, each handling one token
         const int n_token_batches = (ne1 + BATCH_SIZE - 1) / BATCH_SIZE;
         ggml_metal_encoder_dispatch_threadgroups(enc, ne01, n_token_batches, ne02, BATCH_SIZE, 1, 1);
     } else {
-        auto pipeline = ggml_metal_library_get_pipeline_ssm_conv(lib, op, fuse_silu);
+        auto pipeline = ggml_metal_library_get_pipeline_ssm_conv(lib, op, (int32_t) ne10, use_silu);
 
         ggml_metal_encoder_set_pipeline(enc, pipeline);
         ggml_metal_encoder_set_bytes(enc, &args, sizeof(args), 0);
         ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(op->src[0]), 1);
         ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(op->src[1]), 2);
-        ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(out),        3);
+        ggml_metal_encoder_set_buffer(enc, bid_dst, 3);
 
         ggml_metal_encoder_dispatch_threadgroups(enc, ne01, ne1, ne02, 1, 1, 1);
     }
 
-    return fuse_silu ? 2 : 1;
+    if (n_fuse > 1 && ggml_metal_fusion_info_debug(ctx->finfo) > 1) {
+        GGML_LOG_DEBUG("%s: fuse: SSM_CONV + UNARY\n", __func__);
+    }
+
+    return n_fuse;
 }
 
 int ggml_metal_op_ssm_scan(ggml_metal_op_t ctx, int idx) {
@@ -2247,7 +2232,8 @@ int ggml_metal_op_gated_delta_net(ggml_metal_op_t ctx, int idx) {
     // bind valid placeholders for the ordinary/scratch variants.
     ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(has_write_rows ? write_rows : (op->src[6] ? op->src[6] : op->src[5])), ida++);
     ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(has_write_rows ? state_dst : op->src[5]), ida++);
-    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op),         ida++); // dst
+    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op),         ida++); // dst (attn)
+    ggml_metal_encoder_set_buffer  (enc, bid_out,                              ida++); // state_out
     // raw-gate tables (dt_bias, a); never read unless the raw flag is set, bind beta as the dummy
     ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[7] ? op->src[7] : op->src[4]), ida++);
     ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[8] ? op->src[8] : op->src[4]), ida++);
@@ -2564,8 +2550,6 @@ int ggml_metal_op_pool_1d(ggml_metal_op_t ctx, int idx) {
     return 1;
 }
 
-// supported FWHT sizes, must stay in sync with the
-// kernel_fwht_f32_<N> templates in ggml-metal.metal
 // src is the transform input (the matmul's src1, or the un-flipped activation when the
 // preceding sign-flip MUL is fused in); signs is that MUL's sign vector or nullptr.
 static int ggml_metal_op_fwht_impl(ggml_metal_op_t ctx, ggml_tensor * op, ggml_tensor * src, ggml_tensor * signs) {
@@ -2583,7 +2567,9 @@ static int ggml_metal_op_fwht_impl(ggml_metal_op_t ctx, ggml_tensor * op, ggml_t
     GGML_ASSERT(src->type == GGML_TYPE_F32 || src->type == GGML_TYPE_F16);
     GGML_ASSERT(op->type == GGML_TYPE_F32);
 
-    auto pipeline = ggml_metal_library_get_pipeline_fwht(lib, n, src->type == GGML_TYPE_F16);
+    const ggml_tensor * src1 = src;
+
+    auto pipeline = ggml_metal_library_get_pipeline_fwht(lib, n, src1->type);
 
     ggml_metal_encoder_set_pipeline(enc, pipeline);
     ggml_metal_encoder_set_bytes(enc, &args, sizeof(args), 0);
@@ -2595,7 +2581,7 @@ static int ggml_metal_op_fwht_impl(ggml_metal_op_t ctx, ggml_tensor * op, ggml_t
     const int th_max = ggml_metal_pipeline_max_theads_per_threadgroup(pipeline);
     const int simd_size = 32;
 
-    if (n >= GGML_METAL_FWHT_TG_MIN_N) {
+    if (n > GGML_METAL_FWHT_TG_MIN_N) {
         GGML_ASSERT(th_max >= GGML_METAL_FWHT_TG_NT);
         ggml_metal_encoder_dispatch_threadgroups(enc, nrows, 1, 1, GGML_METAL_FWHT_TG_NT, 1, 1);
 
@@ -2789,17 +2775,8 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
     ggml_metal_library_t lib = ctx->lib;
     ggml_metal_encoder_t enc = ctx->enc;
 
-    const int32_t hint = ggml_get_op_params_i32(op, 1);
-
-    if (hint == GGML_HINT_SRC0_IS_HADAMARD) {
-        if ((op->src[1]->type == GGML_TYPE_F32 || op->src[1]->type == GGML_TYPE_F16) &&
-            op->type == GGML_TYPE_F32 &&
-            ggml_is_contiguous(op->src[1]) &&
-            ggml_is_contiguous(op) &&
-            ggml_are_same_shape(op->src[1], op) &&
-            ggml_metal_fwht_supported_size(op->src[1]->ne[0])) {
-            return ggml_metal_op_fwht(ctx, idx);
-        }
+    if (ggml_metal_op_mul_mat_use_fwht(op)) {
+        return ggml_metal_op_fwht(ctx, idx);
     }
     const ggml_metal_device_props * props_dev = ggml_metal_device_get_props(ctx->dev);
 
@@ -2824,9 +2801,6 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
     // 2..8 columns, 2.5-4x slower per weight pass than the Q1_0 mul_mv kernel), so Q1_0
     // stays on the (multi-column) mul_mv kernels up to GGML_METAL_Q1_0_MV_MAX rows.
     static const bool q1_0_ext_enable = getenv("GGML_METAL_Q1_0_EXT_ENABLE") != nullptr;
-    static const int  q1_0_mv_max     = getenv("GGML_METAL_Q1_0_MV_MAX") ? atoi(getenv("GGML_METAL_Q1_0_MV_MAX")) : 16;
-
-    const int ne11_mm_min = op->src[0]->type == GGML_TYPE_Q1_0 ? std::max(8, q1_0_mv_max) : 8;
 
     if (ggml_metal_op_mul_mat_q1_0_pc_supported(op)) {
         const int32_t nblk = ne00/128;
