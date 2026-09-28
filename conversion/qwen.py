@@ -731,6 +731,28 @@ class DFlashModel(Qwen3Model):
         if embedding_scale is not None:
             self.gguf_writer.add_embedding_scale(float(embedding_scale))
 
+        if "conv_kernel_size" in dflash_config:
+            self.gguf_writer.add_conv_kernel_size(int(dflash_config["conv_kernel_size"]))
+            self.gguf_writer.add_conv_group_size(int(dflash_config["conv_group_size"]))
+            self.gguf_writer.add_selector_rank(int(dflash_config["selector_rank"]))
+            self.gguf_writer.add_selector_top_k(int(dflash_config["selector_top_k"]))
+
+        output_multiplier = dflash_config.get(
+            "output_multiplier", self.hparams.get("output_multiplier")
+        )
+        if output_multiplier is not None:
+            self.gguf_writer.add_logit_scale(float(output_multiplier))
+        softcap = dflash_config.get(
+            "final_logit_softcapping", self.hparams.get("final_logit_softcapping")
+        )
+        if softcap is not None and float(softcap) > 0:
+            self.gguf_writer.add_final_logit_softcapping(float(softcap))
+        embedding_scale = dflash_config.get(
+            "input_embedding_scale", self.hparams.get("input_embedding_scale")
+        )
+        if embedding_scale is not None:
+            self.gguf_writer.add_embedding_scale(float(embedding_scale))
+
         target_layer_ids = dflash_config.get("target_layer_ids", self.hparams.get("target_layer_ids", []))
         if target_layer_ids:
             extract_layer_ids = [i + 1 for i in target_layer_ids]

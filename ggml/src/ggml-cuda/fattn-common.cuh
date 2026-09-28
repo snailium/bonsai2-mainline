@@ -413,14 +413,17 @@ static __device__ __forceinline__ void dequantize_V_q4_0(const void * __restrict
     const int     iqs   =  i0          % (QK4_0/2);
     const int     shift = (i0 % QK4_0) / (QK4_0/2);
 
-    int q;
     static_assert(ne == 2 || ne == 4, "bad ne");
-    ggml_cuda_memcpy_1<ne, 2>(&q, x[ib].qs + iqs);
-    q >>= 4*shift;
-    q &= 0x0F0F0F0F;
-    q = __vsubss4(q, 0x08080808);
-
-    const int8_t * q8 = (const int8_t *) &q;
+    // Build the quants in a register from 2-byte loads (the block is only 2-byte aligned) and take the bytes with
+    // shifts: with the address of a local taken here, nvcc for sm_120 kept it on the stack inside the KV loop.
+    const uint16_t * qs16 = (const uint16_t *) (x[ib].qs + iqs);
+    uint32_t qu = qs16[0];
+    if constexpr (ne == 4) {
+        qu |= (uint32_t) qs16[1] << 16;
+    }
+    qu >>= 4*shift;
+    qu &= 0x0F0F0F0F;
+    const int q = __vsubss4(qu, 0x08080808);
 
 #ifdef FP16_AVAILABLE
     if constexpr (std::is_same_v<T, half>) {
@@ -428,7 +431,7 @@ static __device__ __forceinline__ void dequantize_V_q4_0(const void * __restrict
 
 #pragma unroll
         for (int l0 = 0; l0 < ne; l0 += 2) {
-            ((half2 *) dst)[l0/2] = d * make_half2(q8[l0 + 0], q8[l0 + 1]);
+            ((half2 *) dst)[l0/2] = d * make_half2((int8_t) (q >> (8*(l0 + 0))), (int8_t) (q >> (8*(l0 + 1))));
         }
     } else
 #endif // FP16_AVAILABLE
@@ -437,7 +440,7 @@ static __device__ __forceinline__ void dequantize_V_q4_0(const void * __restrict
 
 #pragma unroll
         for (int l = 0; l < ne; ++l) {
-            ((float *) dst)[l] = d * q8[l];
+            ((float *) dst)[l] = d * (int8_t) (q >> (8*l));
         }
     } else {
         static_assert(std::is_same_v<T, void>, "bad type");

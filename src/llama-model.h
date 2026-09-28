@@ -703,6 +703,7 @@ struct llama_model {
     struct ggml_tensor * dfly_hc_gate        = nullptr; // [2*n_embd, n_ff_hc]
     struct ggml_tensor * dfly_hc_up          = nullptr; // [2*n_embd, n_ff_hc]
     struct ggml_tensor * dfly_hc_down        = nullptr; // [n_ff_hc, n_embd]
+
     // unified vector to store target-model extracted layer ids in eagle3, dflash, etc.
     std::vector<int32_t> target_layer_ids;
 

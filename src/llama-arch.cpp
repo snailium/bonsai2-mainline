@@ -743,6 +743,13 @@ static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
     { LLM_TENSOR_DSPARK_CORR_GATE,         "dspark.correction_gate"         },
     { LLM_TENSOR_DSPARK_CORR_UP,           "dspark.correction_up"           },
     { LLM_TENSOR_DSPARK_CORR_DOWN,         "dspark.correction_down"         },
+    { LLM_TENSOR_DFLASH_ATTN_CONV_BASE,                  "blk.%d.attn_conv_base" },
+    { LLM_TENSOR_DFLASH_ATTN_CONV_PROJ,                  "blk.%d.attn_conv_proj" },
+    { LLM_TENSOR_DFLASH_FFN_CONV_BASE,                   "blk.%d.ffn_conv_base" },
+    { LLM_TENSOR_DFLASH_FFN_CONV_PROJ,                   "blk.%d.ffn_conv_proj" },
+    { LLM_TENSOR_DFLASH_SELECTOR_PREV,                   "selector_predecessor" },
+    { LLM_TENSOR_DFLASH_SELECTOR_NEXT,                   "selector_successor" },
+    { LLM_TENSOR_DFLASH_SELECTOR_HIDDEN,                 "selector_hidden" },
 };
 
 // declare information about the model weight tensors:
@@ -1233,6 +1240,13 @@ static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
     {LLM_TENSOR_DFLASH_SELECTOR_HIDDEN,     {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
     {LLM_TENSOR_DSPARK_LOG_SNR_FC1,         {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
     {LLM_TENSOR_DSPARK_LOG_SNR_FC2,         {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_DFLASH_ATTN_CONV_BASE,      {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+    {LLM_TENSOR_DFLASH_ATTN_CONV_PROJ,      {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_DFLASH_FFN_CONV_BASE,       {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+    {LLM_TENSOR_DFLASH_FFN_CONV_PROJ,       {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_DFLASH_SELECTOR_PREV,       {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_GET_ROWS}},
+    {LLM_TENSOR_DFLASH_SELECTOR_NEXT,       {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_GET_ROWS}},
+    {LLM_TENSOR_DFLASH_SELECTOR_HIDDEN,     {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
 };
 
 LLM_KV::LLM_KV(llm_arch arch, const char * suffix) : arch(arch), suffix(suffix) {}

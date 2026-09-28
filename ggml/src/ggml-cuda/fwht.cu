@@ -277,7 +277,12 @@ static bool fwht_launch(ggml_backend_cuda_context & ctx, const T * src_d, float 
             FWHT_CASE(1024)
             FWHT_CASE(2048)
             FWHT_SMEM_CASE(4096)
+            // MUSA allows only 28672 B of static shared memory per block, and both N=8192
+            // kernels declare __shared__ float s[8192] (32768 B). Skip the case there; the
+            // dispatch returns false and the caller falls back to the unfused path.
+#if !defined(GGML_USE_MUSA)
             FWHT_SMEM_CASE(8192)
+#endif
             default:
                 return false;
         }
@@ -287,7 +292,12 @@ static bool fwht_launch(ggml_backend_cuda_context & ctx, const T * src_d, float 
         FWHT_BLOCK_CASE(1024)
         FWHT_BLOCK_CASE(2048)
         FWHT_BLOCK_CASE(4096)
+        // MUSA allows only 28672 B of static shared memory per block, and both N=8192
+        // kernels declare __shared__ float s[8192] (32768 B). Skip the case there; the
+        // dispatch returns false and the caller falls back to the unfused path.
+#if !defined(GGML_USE_MUSA)
         FWHT_BLOCK_CASE(8192)
+#endif
 #undef FWHT_CASE
 #undef FWHT_SMEM_CASE
 #undef FWHT_BLOCK_CASE

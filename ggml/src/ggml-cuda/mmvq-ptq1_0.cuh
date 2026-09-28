@@ -292,6 +292,10 @@ static __global__ void mul_mat_vec_ptq1_0_pt(
         float * dst_ptr,
         const int ncols_x, const int nrows_x, const int stride_row_x, const int stride_col_y, const int stride_col_dst,
         const int rows_per_cta, const uint3 bpr_fd) {
+    // ggml_cuda_kernel_launch uses programmatic dependent launch on sm_90 and newer, so this grid can start
+    // while the kernel that writes vy is still running: no global memory access before this wait
+    ggml_cuda_pdl_sync();
+
     // GGML_CUDA_RESTRICT stays off the formal parameters: it expands differently in the host pass and in
     // the Hopper-or-newer device pass with PDL, and the generated host stub then fails to match the
     // template. Same pattern as mul_mat_vec_q.

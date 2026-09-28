@@ -6,6 +6,8 @@
 extern "C" {
 #endif
 
+bool ggml_metal_ptq1_multicol_enabled(const struct ggml_tensor * op);
+
 struct ggml_metal_buffer_id {
     void * metal; // id<MTLBuffer>
     size_t offs;
@@ -149,6 +151,7 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_argmax   
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_argsort           (ggml_metal_library_t lib, const struct ggml_tensor * op);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_argsort_merge     (ggml_metal_library_t lib, const struct ggml_tensor * op);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_fwht              (ggml_metal_library_t lib, int n, enum ggml_type tsrc);
+struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_fwht              (ggml_metal_library_t lib, int n, bool src_f16, bool swiglu);
 
 // FWHT block widths with dedicated Metal kernels; the Hadamard matmul hint
 // falls back to a plain mul_mat for other widths, which has no F16-input pipeline.
