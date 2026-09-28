@@ -149,3 +149,27 @@
 
 typedef __mt_bfloat16 nv_bfloat16;
 typedef __mt_bfloat162 nv_bfloat162;
+
+// Mappings our ggml-cuda sources need. Each target symbol was checked against
+// mthreads/musa:rc4.3.0-devel-ubuntu22.04-amd64 (/usr/local/musa-4.3.0/include/),
+// and MUSA does not provide the CUDA-side names itself. The first five are also in
+// upstream ggml-org's copy of this file.
+#define cudaDeviceGetAttribute            musaDeviceGetAttribute
+#define cudaDevAttrCooperativeLaunch      musaDevAttrCooperativeLaunch
+#define cudaStreamCaptureStatus           musaStreamCaptureStatus
+#define cudaStreamCaptureStatusNone       musaStreamCaptureStatusNone
+#define cudaStreamIsCapturing             musaStreamIsCapturing
+// The rest come from the fork's own CUDA paths (device type query in ggml-cuda.cu,
+// pinned host memory in allreduce.cu) which upstream does not carry.
+#define cudaDevAttrIntegrated             musaDevAttrIntegrated
+#define cudaDevAttrMultiProcessorCount    musaDevAttrMultiProcessorCount
+#define cudaDeviceScheduleSpin            musaDeviceScheduleSpin
+#define cudaEventCreate                   musaEventCreate
+#define cudaFuncAttributes                musaFuncAttributes
+#define cudaFuncGetAttributes             musaFuncGetAttributes
+#define cudaHostAlloc                     musaHostAlloc
+#define cudaHostAllocMapped               musaHostAllocMapped
+#define cudaHostAllocPortable             musaHostAllocPortable
+#define cudaHostGetDevicePointer          musaHostGetDevicePointer
+#define cudaMemAdvise                     musaMemAdvise
+#define cudaSetDeviceFlags                musaSetDeviceFlags
