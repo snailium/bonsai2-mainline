@@ -26,15 +26,6 @@ std::string common_speculative_type_to_str(enum common_speculative_type type);
 // return the max number of draft tokens based on the speculative parameters
 int32_t common_speculative_n_max(const common_params_speculative * spec);
 
-// return the max number of draft tokens from the initialized implementations
-int32_t common_speculative_n_max(const common_speculative * spec);
-
-// validate and resolve the unconditional synthetic acceptance rates
-std::vector<double> common_speculative_synth_rates_resolve(const common_params_speculative * spec, int32_t n_max);
-
-// return the conditional synthetic acceptance probabilities
-const std::vector<double> & common_speculative_get_synth_probs(const common_speculative * spec);
-
 common_params common_base_params_to_speculative(const common_params & params);
 
 struct common_speculative_output_limits {
@@ -45,6 +36,10 @@ struct common_speculative_output_limits {
 // return the output limits needed for speculative decoding
 common_speculative_output_limits common_speculative_get_output_limits(
         int32_t n_batch, int32_t n_parallel, int32_t n_draft);
+
+// True if deferred catch-up rows plus one first-draft anchor per sequence fit in one llama_decode.
+// Used by draft-mtp so a full-prefill stash (n_tokens == n_batch) does not add a 33rd row.
+bool common_speculative_mtp_first_decode_fits(int32_t n_batch, int32_t catchup_rows, int32_t n_anchors);
 
 common_speculative * common_speculative_init(common_params_speculative & params, uint32_t n_seq);
 
@@ -61,7 +56,7 @@ struct common_speculative_draft_params {
     // can be used to constraint the max draft based on the remaining context size
     int32_t n_max = -1;
 
-    llama_pos   pos0;
+    llama_pos   n_past;
     llama_token id_last;
 
     // TODO: remove in the future by keeping track of the prompt from the _begin() call and the consecutive accept calls
@@ -93,13 +88,13 @@ void common_speculative_accept(common_speculative * spec, llama_seq_id, uint16_t
 
 // (optional) get/set internal state
 bool common_speculative_get_state(common_speculative * spec, llama_seq_id seq_id, std::vector<uint8_t> & data);
-// types of the implementations that were actually initialized, in priority order
-std::vector<enum common_speculative_type> common_speculative_get_types(const common_speculative * spec);
-
 void common_speculative_set_state(common_speculative * spec, llama_seq_id seq_id, const std::vector<uint8_t> & data);
 
 // print statistics about the speculative decoding
 void common_speculative_print_stats(const common_speculative * spec);
+
+// types of the implementations that were actually initialized, in priority order
+std::vector<enum common_speculative_type> common_speculative_get_types(const common_speculative * spec);
 
 // TEST/DEBUG ONLY: directly stage target-tap context rows for the dspark
 // implementation (if registered), bypassing the normal process()-driven

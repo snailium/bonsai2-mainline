@@ -78,12 +78,7 @@ jobs:
         id: matrices
         shell: bash
         env:
-          # The s390x target needs the self-hosted runner labelled ubuntu-24.04-s390x,
-          # which this repository does not have. On 2026-09-27 that job sat queued with
-          # steps=0 for a full 24 h until GitHub cancelled it, which failed the whole run
-          # and skipped the shared-tag publish. A job timeout does not cover queue time, so
-          # leave s390x out of the scheduled rebuild; workflow_dispatch can still request it.
-          SKIP_S390X: ${{ github.event_name == 'schedule' || inputs.skip_s390x || 'false' }}
+          SKIP_S390X: ${{ inputs.skip_s390x || 'false' }}
         run: |
           set -euo pipefail
 

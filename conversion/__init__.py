@@ -60,6 +60,7 @@ TEXT_MODEL_MAP: dict[str, str] = {
     "DeepseekV32ForCausalLM": "deepseek",
     "DFlashDraftModel": "qwen",
     "DFlash2DraftModel": "qwen",
+
     "Qwen3DFlyModel": "qwen",
     "Qwen3DSparkDFlareV2Model": "qwen",
     "DFlash2DraftModel": "qwen",
@@ -113,6 +114,7 @@ TEXT_MODEL_MAP: dict[str, str] = {
     "Glm4MoeLiteForCausalLM": "glm",
     "Glm4vForConditionalGeneration": "glm",
     "Glm4vMoeForConditionalGeneration": "glm",
+    "Glm5NextForConditionalGeneration": "glm",
     "GlmForCausalLM": "chatglm",
     "GlmMoeDsaForCausalLM": "glm",
     "GlmOcrForConditionalGeneration": "glm",
@@ -312,6 +314,7 @@ MMPROJ_MODEL_MAP: dict[str, str] = {
     "Glm4vForConditionalGeneration": "qwen3vl",
     "BailingMoeV3VLForConditionalGeneration": "bailingmoe3",
     "Glm4vMoeForConditionalGeneration": "qwen3vl",
+    "Glm5NextForConditionalGeneration": "qwen3vl",
     "Glm5vForConditionalGeneration": "kimivl",
     "GlmOcrForConditionalGeneration": "qwen3vl",
     "GlmasrModel": "ultravox",

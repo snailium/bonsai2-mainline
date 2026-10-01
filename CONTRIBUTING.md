@@ -26,6 +26,9 @@ If AI is used to generate any portion of the code, contributors must adhere to t
 
 For more info, please refer to the [AGENTS.md](AGENTS.md) file.
 
+3. Perform a comprehensive manual review prior to submitting the pull request.
+4. Be prepared to explain every line of code they submitted when asked about it by a maintainer.
+
 # Pull requests (for contributors & collaborators)
 
 ### Before you start

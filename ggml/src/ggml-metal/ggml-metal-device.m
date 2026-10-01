@@ -110,7 +110,21 @@ int ggml_metal_pipeline_max_theads_per_threadgroup(struct ggml_metal_pipeline_wi
 //   X(suffix, name): name is both the kernels/<name>.metal basename and the
 //   ggml_metallib_<name>_{start,end} embed-symbol stem.
 #define GGML_METAL_LIBS \
-    X(FA,              fa)             \
+    X(FA_AUX,          fa_aux)         \
+    X(FA_F16,          fa_f16)         \
+    X(FA_F32,          fa_f32)         \
+    X(FA_Q4_0,         fa_q4_0)        \
+    X(FA_Q4_1,         fa_q4_1)        \
+    X(FA_Q5_0,         fa_q5_0)        \
+    X(FA_Q5_1,         fa_q5_1)        \
+    X(FA_Q8_0,         fa_q8_0)        \
+    X(FA_VEC_F16,      fa_vec_f16)     \
+    X(FA_VEC_F32,      fa_vec_f32)     \
+    X(FA_VEC_Q4_0,     fa_vec_q4_0)    \
+    X(FA_VEC_Q4_1,     fa_vec_q4_1)    \
+    X(FA_VEC_Q5_0,     fa_vec_q5_0)    \
+    X(FA_VEC_Q5_1,     fa_vec_q5_1)    \
+    X(FA_VEC_Q8_0,     fa_vec_q8_0)    \
     X(MUL_MV,          mul_mv)         \
     X(MUL_MM,          mul_mm)         \
     X(QUANTIZE,        quantize)       \
@@ -185,7 +199,6 @@ static void ggml_metal_library_build_index(ggml_metal_library_t lib) {
 static void ggml_metal_device_disable_tensor(ggml_metal_device_t dev);
 
 // the tensor API headers are exposed to the shader compiler only at Metal language version 4.0
-// tensor API headers need Metal 4.0, and an unset language version follows the build SDK
 static void ggml_metal_compile_options_set_lang(MTLCompileOptions * options, bool has_tensor) {
     if (!has_tensor) {
         return;
@@ -292,6 +305,15 @@ static NSString * ggml_metal_library_flatten_source(NSString * path_source, NSEr
         return nil;
     }
     return src;
+}
+
+// tensor API headers need Metal 4.0, and an unset language version follows the build SDK
+static void ggml_metal_compile_options_set_lang(MTLCompileOptions * options, bool has_tensor) {
+    if (!has_tensor) {
+        return;
+    }
+
+    options.languageVersion = (MTLLanguageVersion) MTLLanguageVersion4_0_GGML;
 }
 
 // Compile all per-kind libraries in parallel. `source_for_kind` returns the MSL
@@ -1131,18 +1153,73 @@ ggml_metal_device_t ggml_metal_device_init(int device, int n_devices) {
                     dev->props.has_bfloat = false;
                 }
 
-                dev->props.has_tensor = [dev->mtl_device supportsFamily:MTLGPUFamilyMetal4_GGML];
-                if (getenv("GGML_METAL_TENSOR_DISABLE") != NULL) {
-                    dev->props.has_tensor = false;
-                }
+            dev->props.has_tensor = [dev->mtl_device supportsFamily:MTLGPUFamilyMetal4_GGML];
+            if (getenv("GGML_METAL_TENSOR_DISABLE") != NULL) {
+                dev->props.has_tensor = false;
+            }
 
 #if !GGML_METAL_EMBED_LIBRARY
-                // default.metallib has no tensor kernels, so tensor dispatch would use the wrong tile sizes
-                if (dev->props.has_tensor) {
-                    GGML_LOG_INFO("%s: tensor API disabled - precompiled metal library has no tensor kernels\n", __func__);
+            // default.metallib has no tensor kernels, so tensor dispatch would use the wrong tile sizes
+            if (dev->props.has_tensor) {
+                GGML_LOG_INFO("%s: tensor API disabled - precompiled metal library has no tensor kernels\n", __func__);
+                dev->props.has_tensor = false;
+            }
+#endif
+
+            // note: disable the tensor API by default for old chips because with the current implementation it is not useful
+            // - M2 Ultra:   ~5% slower
+            // - M4, M4 Max: no significant difference
+            //
+            // TODO: try to update the tensor API kernels to at least match the simdgroup performance
+            if (getenv("GGML_METAL_TENSOR_ENABLE") == NULL &&
+                ![[dev->mtl_device name] containsString:@"M5"] &&
+                ![[dev->mtl_device name] containsString:@"M6"] &&
+                ![[dev->mtl_device name] containsString:@"A19"] &&
+                ![[dev->mtl_device name] containsString:@"A20"]) {
+                GGML_LOG_INFO("%s: tensor API disabled for pre-M5 and pre-A19 devices\n", __func__);
+                dev->props.has_tensor = false;
+            }
+
+            // double-check that the tensor API compiles
+            if (dev->props.has_tensor) {
+                const char * src_tensor_f16 = "\n"
+                    "#include <metal_stdlib> \n"
+                    "#include <metal_tensor> \n"
+                    "#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h> \n"
+                    " \n"
+                    "using namespace metal; \n"
+                    "using namespace mpp::tensor_ops; \n"
+                    " \n"
+                    "kernel void dummy_kernel( \n"
+                    "    tensor<device  half, dextents<int32_t, 2>> A [[buffer(0)]], \n"
+                    "    tensor<device  half, dextents<int32_t, 2>> B [[buffer(1)]], \n"
+                    "    device float * C [[buffer(2)]], \n"
+                    "    uint2 tgid [[threadgroup_position_in_grid]]) \n"
+                    "{ \n"
+                    "    auto tA = A.slice(0, (int)tgid.y); \n"
+                    "    auto tB = B.slice((int)tgid.x, 0); \n"
+                    " \n"
+                    "    matmul2d< \n"
+                    "        matmul2d_descriptor(16, 16, dynamic_extent), \n"
+                    "        execution_simdgroups<4>> mm; \n"
+                    " \n"
+                    "    auto cT = mm.get_destination_cooperative_tensor<decltype(tA), decltype(tB), float>(); \n"
+                    " \n"
+                    "    auto sA = tA.slice(0, 0); \n"
+                    "    auto sB = tB.slice(0, 0); \n"
+                    "    mm.run(sB, sA, cT); \n"
+                    " \n"
+                    "    auto tC = tensor<device float, dextents<int32_t, 2>, tensor_inline>(C, dextents<int32_t, 2>(16, 16)); \n"
+                    " \n"
+                    "    cT.store(tC); \n"
+                    "}";
+
+                GGML_LOG_INFO("%s: testing tensor API for f16 support\n", __func__);
+                ggml_metal_library_t lib = ggml_metal_library_init_from_source(dev, src_tensor_f16, false);
+                if (lib == NULL) {
+                    GGML_LOG_WARN("%s: - the tensor API is not supported in this environment - disabling\n", __func__);
                     dev->props.has_tensor = false;
                 }
-#endif
 
                 // note: disable the tensor API by default for old chips because with the current implementation it is not useful
                 // - M2 Ultra:   ~5% slower
@@ -1710,13 +1787,6 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
         case GGML_OP_POOL_2D:
             return op->src[0]->type == GGML_TYPE_F32;
         case GGML_OP_PAD:
-            // TODO: add circular padding support for metal, see https://github.com/ggml-org/llama.cpp/pull/16985
-            if (ggml_get_op_params_i32(op, 8) != 0) {
-                return false;
-            }
-
-            return (ggml_get_op_params_i32(op, 0) == 0) && (ggml_get_op_params_i32(op, 2) == 0) &&
-                   (ggml_get_op_params_i32(op, 4) == 0) && (ggml_get_op_params_i32(op, 6) == 0);
         case GGML_OP_PAD_REFLECT_1D:
         case GGML_OP_TIMESTEP_EMBEDDING:
             return op->src[0]->type == GGML_TYPE_F32;
@@ -1848,25 +1918,23 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
         case GGML_OP_SOLVE_TRI:
             return has_simdgroup_reduction && op->src[0]->type == GGML_TYPE_F32;
         case GGML_OP_MUL_MAT:
-            if (op->op == GGML_OP_MUL_MAT &&
-                ggml_get_op_params_i32(op, 1) == GGML_HINT_SRC0_IS_HADAMARD &&
-                op->src[1]->type == GGML_TYPE_F16 &&
-                !ggml_metal_fwht_supported_size(op->src[1]->ne[0])) {
-                return false;
-            }
             // the FWHT kernels read an F16 source directly; every other F16 src1 path
             // still goes through ggml_metal_supports_mul_mat_op
             if (op->src[0]->type == GGML_TYPE_F32 && op->src[1]->type == GGML_TYPE_F16 &&
-                ggml_metal_op_mul_mat_use_fwht(op)) {
+                ggml_metal_op_mul_mat_use_fwht(op, dev->props.max_theadgroup_memory_size)) {
                 return has_simdgroup_reduction;
             }
             return ggml_metal_supports_mul_mat_op(
                     has_simdgroup_reduction, op, true,
                     ggml_metal_op_mul_mat_use_mm(op, has_simdgroup_mm));
         case GGML_OP_MUL_MAT_ID:
-            return ggml_metal_supports_mul_mat_op(
-                    has_simdgroup_reduction, op, false,
-                    ggml_metal_op_mul_mat_id_use_mm(op, has_simdgroup_mm));
+            if (op->op == GGML_OP_MUL_MAT &&
+                ggml_get_op_params_i32(op, 1) == GGML_HINT_SRC0_IS_HADAMARD &&
+                op->src[1]->type == GGML_TYPE_F16 &&
+                !ggml_metal_fwht_supported_size(op->src[1]->ne[0])) {
+                return false;
+            }
+            return has_simdgroup_reduction && op->src[0]->type != GGML_TYPE_NVFP4;
         case GGML_OP_SET:
         case GGML_OP_CPY:
         case GGML_OP_DUP:
@@ -2393,6 +2461,8 @@ void ggml_metal_buffer_set_tensor(ggml_metal_buffer_t buf, struct ggml_tensor * 
         dispatch_release(completion_semaphore);
 
         //[cmd_buf waitUntilCompleted];
+
+        [buf_src release];
     }
 }
 
@@ -2431,6 +2501,8 @@ void ggml_metal_buffer_get_tensor(ggml_metal_buffer_t buf, const struct ggml_ten
 
         [cmd_buf commit];
         [cmd_buf waitUntilCompleted];
+
+        [buf_dst release];
     }
 }
 

@@ -170,6 +170,9 @@ class ModelBase:
         self.dir_model_card = dir_model  # overridden in convert_lora_to_gguf.py
         self._is_nvfp4 = False
         self._is_mxfp4 = False
+        self._nvfp4_global_algo: str | None = None # checkpoint-wide NVFP4 quant_algo
+        self._nvfp4_layer_algo: dict[str, str | None] = {} # per-layer quant_algo, keyed by HF module path
+        self._prec_a4: dict[str, bool] = {} # gguf tensor name -> can use 4-bit (A4) activations
         self._fp8_as_q8 = fp8_as_q8
         self._fp8_dequantized: set[str] = set()
 
@@ -231,7 +234,7 @@ class ModelBase:
 
         prefix = "model" if not self.is_mistral_format else "consolidated"
         part_names: list[str] = ModelBase.get_model_part_names(self.dir_model, prefix, ".safetensors")
-        is_safetensors: bool = len(part_names) > 0
+        is_safetensors: bool = len(part_names) > 0 or (not self.is_mistral_format and (self.dir_model / "model.safetensors.index.json").is_file())
         if not is_safetensors:
             part_names = ModelBase.get_model_part_names(self.dir_model, "pytorch_model", ".bin")
 
@@ -664,6 +667,18 @@ class ModelBase:
                 if bias_types:
                     self._fusable_qkv_bias_layers.add(bid)
 
+    def _tag_prec_a4(self, hf_name: str, gguf_name: str) -> None:
+        # W4A16_NVFP4 should not use 4-bit activations
+        name = hf_name.removesuffix(".weight").removesuffix(".bias")
+        algo = self._nvfp4_global_algo
+        while name:
+            if name in self._nvfp4_layer_algo:
+                algo = self._nvfp4_layer_algo[name]
+                break
+            name = name.rpartition(".")[0]
+        if algo == "W4A16_NVFP4":
+            self._prec_a4[gguf_name] = False
+
     def hadamard_folded_names(self) -> set[str]:
         """Source-tensor names folded under a Hadamard manifest, or empty."""
         cached = getattr(self, "_hadamard_folded_names", None)
@@ -678,15 +693,22 @@ class ModelBase:
                         names.add(record["name"])
         self._hadamard_folded_names = names
         return names
+
     def add_hadamard_metadata(self) -> None:
         """Transfer a packed-checkpoint transform contract into GGUF metadata."""
+        manifest_path = self.dir_model / "hadamard_packing.json"
         if not manifest_path.is_file():
+            return
+
+        with manifest_path.open("r", encoding="utf-8") as f:
             manifest = json.load(f)
+
         schema_version = manifest.get("schema_version")
         if schema_version not in (1, 2, 3) or manifest.get("kind") != "hadamard-weight-fold":
             raise ValueError(f"Unsupported Hadamard manifest: {manifest_path}")
         if manifest.get("status") != "requires-matching-runtime":
             raise ValueError(f"Unexpected Hadamard manifest status: {manifest.get('status')!r}")
+
         transform = manifest.get("transform")
         if not isinstance(transform, dict):
             raise ValueError("Hadamard manifest is missing transform metadata")
@@ -715,9 +737,11 @@ class ModelBase:
                     raise ValueError(f"invalid sign vector for width {width}")
                 sign_widths.append(width)
                 sign_values.extend(int(v) for v in vec)
+
         tensor_records = manifest.get("tensors")
         if not isinstance(tensor_records, list) or not tensor_records:
             raise ValueError("Hadamard manifest has no folded tensors")
+
         # The runtime applies the activation transform only where the graph goes through
         # build_lora_mm/build_lora_mm_id. Restrict the contract to architectures and tensor
         # kinds verified to route every matmul through those helpers; anything else must
@@ -729,9 +753,12 @@ class ModelBase:
             gguf.MODEL_ARCH.QWEN35,
             gguf.MODEL_ARCH.QWEN35MOE,
             gguf.MODEL_ARCH.QWEN3NEXT,
+        }
         if self.model_arch not in _HADAMARD_ARCHS:
+            raise ValueError(
                 f"Hadamard folding is not verified for arch {self.model_arch.name}; "
                 "the runtime would load the GGUF without applying the activation transform"
+            )
         _HADAMARD_KINDS = re.compile(
             r"output\.weight|"
             r"blk\.\d+\.("
@@ -741,6 +768,7 @@ class ModelBase:
             r"|ffn_gate_shexp|ffn_up_shexp|ffn_down_shexp"
             r"|ssm_out"
             r")\.weight"
+        )
         weight_names: list[str] = []
         inverse_weight_names: list[str] = []
         for record in tensor_records:
@@ -759,14 +787,19 @@ class ModelBase:
                 # the runtime applies the inverse transform only to the token-embedding
                 # lookup; any other latent table would load and silently stay rotated
                 if mapped != "token_embd.weight":
+                    raise ValueError(
                         f"Hadamard tensor {record['name']!r} maps to {mapped!r}, which is not a "
                         "verified inverse-after-lookup table"
+                    )
                 inverse_weight_names.append(mapped)
             else:
                 if not _HADAMARD_KINDS.fullmatch(mapped):
+                    raise ValueError(
                         f"Hadamard tensor {record['name']!r} maps to {mapped!r}, which is not on a "
                         "verified Hadamard-aware matmul path"
+                    )
                 weight_names.append(mapped)
+
         tied_output = manifest.get("tied_output", False)
         if not isinstance(tied_output, bool) or (schema_version == 3) != tied_output:
             raise ValueError("Hadamard schema 3 requires tied_output=true; older schemas forbid it")
@@ -783,12 +816,14 @@ class ModelBase:
             self.gguf_writer.add_bool("prism.hadamard.tied_output", True)
         elif "token_embd.weight" in inverse_weight_names and self.hparams.get("tie_word_embeddings", False):
             raise ValueError("A tied latent embedding requires Hadamard schema 3 and tied_output=true")
+
         self.gguf_writer.add_uint32("prism.hadamard.version", 2 if tied_output else 1)
         self.gguf_writer.add_uint32("prism.hadamard.block_size", block_size)
         self.gguf_writer.add_string("prism.hadamard.transform", "normalized-sylvester-walsh-hadamard")
         self.gguf_writer.add_string("prism.hadamard.axis", "input-last-dimension")
         self.gguf_writer.add_string("prism.hadamard.sign_mode", sign_mode)
         self.gguf_writer.add_array("prism.hadamard.weight_names", weight_names)
+        if sign_mode == "explicit":
             self.gguf_writer.add_array("prism.hadamard.sign_widths", sign_widths)
             self.gguf_writer.add_array("prism.hadamard.sign_values", sign_values)
         if inverse_weight_names:
@@ -798,6 +833,7 @@ class ModelBase:
             logger.info("GGUF Hadamard: linear-attention out_proj kept in grouped V order")
         logger.info("GGUF Hadamard contract: H%d, sign_mode=%s, %d folded weight(s), %d inverse-lookup",
                     block_size, sign_mode, len(weight_names), len(inverse_weight_names))
+
     def set_gguf_parameters(self):
         raise NotImplementedError("set_gguf_parameters() must be implemented in subclasses")
 
@@ -971,6 +1007,7 @@ class ModelBase:
         raw, shape = self._nvfp4_pack(weight, scale)
         logger.info(f"Repacked {new_name} with shape {shape} and quantization NVFP4")
         self.gguf_writer.add_tensor(new_name, raw, raw_dtype=gguf.GGMLQuantizationType.NVFP4)
+        self._tag_prec_a4(name, new_name)
 
         self._write_scale_tensor(new_name.replace(".weight", ".scale"), scale2)
         self._write_scale_tensor(new_name.replace(".weight", ".input_scale"), input_scale)
@@ -1063,6 +1100,7 @@ class ModelBase:
         new_name = self.map_tensor_name(merged_name)
         logger.info(f"Repacked {new_name} with shape [{len(experts)}, {shape[0]}, {shape[1]}] and quantization NVFP4")
         self.gguf_writer.add_tensor(new_name, merged, raw_dtype=gguf.GGMLQuantizationType.NVFP4)
+        self._tag_prec_a4(merged_name, new_name)
 
         scales.sort(key=lambda x: x[0])
         self._write_scales_tensor(new_name.replace(".weight", ".scale"), [s[1] for s in scales])
@@ -1105,6 +1143,9 @@ class ModelBase:
             and bool(quant_groups)
             and all(g.get("format") == "nvfp4-pack-quantized" for g in quant_groups.values() if isinstance(g, dict))
         )
+
+        self._nvfp4_global_algo = quant_algo
+
         if quant_algo != "NVFP4":
             if nvfp4_compressed_tensors:
                 quant_algo = "NVFP4"
@@ -1113,6 +1154,22 @@ class ModelBase:
 
         self._is_nvfp4 = quant_algo in ("NVFP4", "W4A16_NVFP4")
         self._is_mxfp4 = quant_method == "mxfp4"
+
+        # Per-tensor NVFP4 precision.
+        self._nvfp4_layer_algo = {}
+        if quant_layers:
+            # store all possible module paths and assert if a quantized layer is not in the model
+            modules: set[str] = set()
+            for name in self.model_tensors:
+                while name := name.rpartition(".")[0]:
+                    modules.add(name)
+
+            for layer_name, entry in quant_layers.items():
+                if not isinstance(entry, dict):
+                    continue
+                if titem := self.filter_tensors((layer_name, lambda: torch.empty(0))):
+                    assert titem[0] in modules, f"quantized_layers entry {layer_name!r} is not in the model tensors"
+                    self._nvfp4_layer_algo[titem[0]] = entry.get("quant_algo")
 
         # NVFP4 weights are repacked and written directly to gguf_writer.
         # This must run before dequant_model so NVFP4 tensors are removed
@@ -1318,6 +1375,12 @@ class ModelBase:
 
         logger.info("Set model quantization version")
         self.gguf_writer.add_quantization_version(gguf.GGML_QUANT_VERSION)
+
+        if self._prec_a4:
+            names = sorted(self._prec_a4.keys())
+            values = [self._prec_a4[n] for n in names]
+            logger.info(f"Set prec_a4 metadata for {len(names)} tensor(s)")
+            self.gguf_writer.add_tensor_extra_prec_a4(names, values)
 
         self.add_hadamard_metadata()
 
@@ -2420,6 +2483,12 @@ class TextModel(ModelBase):
                 raise NotImplementedError("Only MEAN, CLS, and LAST pooling types supported")
             self.gguf_writer.add_pooling_type(pooling_type)
 
+        # pooling before a classification head (e.g. ModernBertForSequenceClassification)
+        if (classifier_pooling := self.hparams.get("classifier_pooling")) is not None:
+            if classifier_pooling not in ("cls", "mean"):
+                raise NotImplementedError(f"Unsupported classifier_pooling: {classifier_pooling}")
+            self.gguf_writer.add_classifier_pooling_type(mode_mapping[classifier_pooling])
+
     def _set_vocab_glmedge(self):
         from transformers import AutoTokenizer
         tokenizer = AutoTokenizer.from_pretrained(self.dir_model)
@@ -2653,6 +2722,11 @@ class TextModel(ModelBase):
         self.gguf_writer.add_eot_token_id(4)
 
         self.gguf_writer.add_add_space_prefix(False)
+
+        if (add_bos := tokenizer_config.get("add_bos_token")) is not None:
+            self.gguf_writer.add_add_bos_token(add_bos)
+        if (add_eos := tokenizer_config.get("add_eos_token")) is not None:
+            self.gguf_writer.add_add_eos_token(add_eos)
 
 
 class MmprojModel(ModelBase):

@@ -11,7 +11,6 @@
 #include "ggml-cpp.h"
 #include "ggml-opt.h"
 
-#include <array>
 #include <map>
 #include <vector>
 
@@ -273,8 +272,6 @@ public:
     bool set_sampler(llama_seq_id seq_id, llama_sampler * sampler);
 
 private:
-    llm_graph_result * get_gf_res_prev();
-
     llm_graph_params graph_params(
                         llm_graph_result * res,
                       const llama_ubatch & ubatch,
@@ -360,7 +357,6 @@ private:
     // reuse the batch_allocr to avoid unnecessary memory allocations
     std::unique_ptr<llama_batch_allocr> balloc;
 
-    uint32_t n_input_tensors = 0; // number of tensors marked as input during the last graph reserve
     uint32_t n_outputs = 0; // number of actually-used outputs in the current ubatch or last logical batch
 
     std::vector<int32_t> output_ids; // map batch token positions to ids of the logits and embd buffers
@@ -395,19 +391,18 @@ private:
     std::vector<ggml_backend_buffer_type_t> backend_buft;
     std::vector<size_t>                     backend_buf_exp_size; // expected buffer sizes
 
-    // Separate arenas give batches with and without outputs distinct CUDA graph cache keys.
-    std::array<llm_graph_result_ptr, 2> gf_res_prev;
+    llm_graph_result_ptr gf_res_prev;
     llm_graph_result_ptr gf_res_reserve;
-
-    llm_graph_result * gf_res_prev_active = nullptr;
 
     // the Hadamard transforms this context's graphs consult: the model's own,
     // plus the target's when the model borrows its token embeddings or output
     // head through ctx_other (those tensors keep the target's folding)
     llama_hadamard_rotations hadamard_rotations;
     llama_hadamard_rotations hadamard_inverses;
+
     // one-time Hadamard transform-coverage check on the first built graph
     bool hadamard_verified = false;
+
     // host buffer for the model output (logits and embeddings)
     ggml_backend_buffer_ptr buf_output;
 

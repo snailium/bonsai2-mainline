@@ -1,8 +1,10 @@
 #include "common.h"
 
-// fused trailing SiLU (the graph's conv output is consumed only by a silu)
 constant bool FC_ssm_conv_silu [[function_constant(FC_SSM_CONV + 1)]];
 constant int  FC_ssm_conv_nc    [[function_constant(FC_SSM_CONV + 2)]];
+
+// fused trailing SiLU (the graph's conv output is consumed only by a silu)
+constant bool FC_ssm_conv_silu [[function_constant(FC_SSM_CONV_SILU)]];
 
 // ref: ggml.c:ggml_compute_forward_ssm_conv_f32
 kernel void kernel_ssm_conv_f32_f32(
@@ -34,6 +36,8 @@ kernel void kernel_ssm_conv_f32_f32(
     }
 
     x[0] = FC_ssm_conv_silu ? sumf/(1.0f + exp(-sumf)) : sumf;
+
+    x[0] = FC_ssm_conv_silu ? sumf / (1.0f + exp(-sumf)) : sumf;
 }
 
 kernel void kernel_ssm_conv_f32_f32_4(
@@ -65,6 +69,8 @@ kernel void kernel_ssm_conv_f32_f32_4(
     }
 
     x[0] = FC_ssm_conv_silu ? sumf/(1.0f + exp(-sumf)) : sumf;
+
+    x[0] = FC_ssm_conv_silu ? sumf / (1.0f + exp(-sumf)) : sumf;
 }
 
 constant short FC_ssm_conv_bs   [[function_constant(FC_SSM_CONV + 0)]];
@@ -114,6 +120,8 @@ kernel void kernel_ssm_conv_f32_f32_batched(
     }
 
     x[0] = FC_ssm_conv_silu ? sumf/(1.0f + exp(-sumf)) : sumf;
+
+    x[0] = FC_ssm_conv_silu ? sumf / (1.0f + exp(-sumf)) : sumf;
 }
 
 kernel void kernel_ssm_conv_f32_f32_batched_4(
@@ -159,6 +167,8 @@ kernel void kernel_ssm_conv_f32_f32_batched_4(
     }
 
     x[0] = FC_ssm_conv_silu ? sumf/(1.0f + exp(-sumf)) : sumf;
+
+    x[0] = FC_ssm_conv_silu ? sumf / (1.0f + exp(-sumf)) : sumf;
 }
 
 // ref: ggml.c:ggml_compute_forward_ssm_scan_f32, Mamba-2 part
